@@ -1,0 +1,30 @@
+services:
+  md-server:
+    build: .
+    container_name: md-server
+    restart: unless-stopped
+    ports:
+      # Tailscale interface only — not reachable from LAN or the public
+      # internet. Unset TAILSCALE_IP falls back to a loopback alias, so a fresh
+      # clone is never exposed by accident and never collides with the bindings
+      # below.
+      - "${TAILSCALE_IP:-127.0.0.2}:8080:8080"
+      # Loopback, so the box itself (and agents running on it) can reach it.
+      - "127.0.0.1:8080:8080"
+      # The address this box's own hostname resolves to. On Debian/Ubuntu
+      # /etc/hosts maps it to 127.0.1.1, which beats the Tailscale search
+      # domain locally — bind it so the short name works on the box too.
+      - "${LOCAL_HOST_IP:-127.0.1.1}:8080:8080"
+    volumes:
+      - ${DOCS_DIR:-${HOME}/development}:/docs:ro
+      # Mounted rather than baked in, so a plugin can be added or removed with
+      # a restart instead of a rebuild.
+      - ./plugins:/app/plugins:ro
+    environment:
+      DOCS_ROOT: /docs
+      TZ: ${TZ:-UTC}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
