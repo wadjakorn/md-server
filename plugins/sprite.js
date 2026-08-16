@@ -124,22 +124,35 @@ const CLIENT = String.raw`
     if (!frames || !frames.length) return
     const f = frames[state.i % frames.length]
     const z = state.zoom
-    cv.width = f.rect.w * z
-    cv.height = f.rect.h * z
-    ctx.imageSmoothingEnabled = false
-    ctx.clearRect(0, 0, cv.width, cv.height)
-    ctx.drawImage(SHEET, f.rect.x, f.rect.y, f.rect.w, f.rect.h, 0, 0, cv.width, cv.height)
+    // Assigning width/height reallocates the backing store and resets the
+    // context state, so only touch them when the size actually changed.
+    const w = f.rect.w * z, h = f.rect.h * z
+    if (cv.width !== w || cv.height !== h) {
+      cv.width = w
+      cv.height = h
+      ctx.imageSmoothingEnabled = false
+    }
+    ctx.clearRect(0, 0, w, h)
+    ctx.drawImage(SHEET, f.rect.x, f.rect.y, f.rect.w, f.rect.h, 0, 0, w, h)
     el('sp-frame').textContent = (state.i % frames.length) + 1 + ' / ' + frames.length + '  ' + f.key
   }
 
+  // The loop runs only while this page is the one on screen. Left unbounded it
+  // keeps animating from the back/forward cache, so opening a second sprite
+  // means two sheets being drawn at once on a device with one GPU to spare.
+  let raf = 0
   function tick (t) {
-    requestAnimationFrame(tick)
+    raf = requestAnimationFrame(tick)
     if (!state.playing) return
     if (t - state.last < 1000 / state.fps) return
     state.last = t
     state.i++
     draw()
   }
+  function run () { if (!raf) raf = requestAnimationFrame(tick) }
+  function halt () { if (raf) { cancelAnimationFrame(raf); raf = 0 } }
+  document.addEventListener('visibilitychange', () => document.hidden ? halt() : run())
+  addEventListener('pagehide', halt)
 
   function select (name) {
     state.name = name
@@ -191,7 +204,7 @@ const CLIENT = String.raw`
     }
     select(state.anims.keys().next().value)
     grid()
-    requestAnimationFrame(tick)
+    run()
   }
 
   el('sp-fps').oninput = (e) => { state.fps = Number(e.target.value); el('sp-fps-v').textContent = state.fps }

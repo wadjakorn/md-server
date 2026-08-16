@@ -50,6 +50,8 @@ works from the tailnet but is refused on the box itself.
   otherwise render as highlighted HTML
 - `/_recent` — every markdown file under the root, newest edit first
 - `/_search?q=` — filename and full-text search
+- `/_mtime?path=` — `{"sig"}`, a change signature for one file; what the
+  open page polls to know it should reload
 - `/_healthz` — liveness probe
 
 ## Features
@@ -59,7 +61,10 @@ works from the tailnet but is refused on the box itself.
 - **Image viewer** — fit-to-screen with tap-to-zoom, arrow keys or ‹ › to walk
   the other images in the same folder, and the next one prefetched.
 - **Auto-reload** — the open page reloads when the file changes on disk, so a
-  link stays live while a doc is being revised.
+  link stays live while a doc is being revised. It polls `/_mtime` every two
+  seconds while visible, and stops while the tab is in the background. A held
+  connection would be simpler, but each one costs a page one of the browser's
+  six per origin, and a handful of open notes then locks the server out.
 - **Mermaid** diagrams, **highlight.js** syntax highlighting, both following the
   device's light/dark setting.
 - Mobile-first layout with safe-area insets; wide tables and code scroll inside

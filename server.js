@@ -192,12 +192,31 @@ ${body}
 </main>
 ${watchPath ? `<div id="reload-toast">Updated — reloading…</div>
 <script>
-  const es = new EventSource('/_events?path=' + encodeURIComponent(${JSON.stringify(watchPath)}))
-  es.onmessage = (e) => {
-    if (e.data !== 'change') return
+  // Polled, not streamed. A held connection is one of the browser's six per
+  // origin, and every open page would hold one — so a few open notes locked
+  // the whole server out. Polling only while visible keeps it to one small
+  // request every two seconds for the page actually being read.
+  const watch = '/_mtime?path=' + encodeURIComponent(${JSON.stringify(watchPath)})
+  let sig = null
+  let timer = 0
+  const poll = async () => {
+    let now
+    try {
+      now = (await (await fetch(watch, { cache: 'no-store' })).json()).sig
+    } catch { return } // server restarting, say — try again next tick
+    if (sig === null) { sig = now; return }
+    if (now === sig) return
     document.getElementById('reload-toast').classList.add('show')
     setTimeout(() => location.reload(), 250)
   }
+  // Restarting on show also catches up a page returning from the back/forward
+  // cache, which may have missed a change while it was away.
+  const start = () => { if (!timer) { poll(); timer = setInterval(poll, 2000) } }
+  const stop = () => { clearInterval(timer); timer = 0 }
+  document.addEventListener('visibilitychange', () => document.hidden ? stop() : start())
+  addEventListener('pagehide', stop)
+  addEventListener('pageshow', start)
+  start()
 </script>` : ''}
 ${mermaid ? `<script type="module">
   import mermaid from '/_assets/mermaid.esm.min.mjs'
@@ -545,46 +564,32 @@ function sendFile (abs, st, req, res) {
   return fs.createReadStream(abs).pipe(res)
 }
 
-// -------------------------------------------------------- live reload (SSE)
+// ----------------------------------------------------- live reload (polled)
 
-function handleEvents (req, res, query) {
+/**
+ * One stat, as a change signature the page can compare against.
+ *
+ * This replaced an SSE stream. A stream cost one of the browser's six
+ * connections per origin for the whole life of every page that opened it, so
+ * five or six open notes — or, on a phone, a couple of pages held in the
+ * back/forward cache — wedged the origin completely: no further request to
+ * this server could be made until the browser tore an old page down. A poll
+ * holds nothing open, and drops the per-page fs.watchFile watcher too.
+ */
+async function handleMtime (res, query) {
   // query values arrive already decoded — resolveDecoded, not safeResolve.
   const abs = resolveDecoded('/' + (query.path || ''))
   if (!abs) {
     res.writeHead(400).end()
     return
   }
-  res.writeHead(200, {
-    'content-type': 'text/event-stream',
-    'cache-control': 'no-cache',
-    connection: 'keep-alive',
-    'x-accel-buffering': 'no',
-  })
-  res.write('retry: 2000\n\n')
-
-  // watchFile polls — reliable across bind mounts where inotify can be flaky.
-  // Seed the baseline from a stat now: watchFile does not emit an initial event,
-  // so treating the first callback as the baseline would swallow a real change.
-  const sigOf = (st) => `${st.mtimeMs}:${st.size}`
-  let last
+  let sig = null
   try {
-    last = sigOf(fs.statSync(abs))
-  } catch {
-    last = ''
-  }
-  const listener = (curr) => {
-    const sig = sigOf(curr)
-    if (sig !== last) {
-      last = sig
-      res.write('data: change\n\n')
-    }
-  }
-  fs.watchFile(abs, { interval: 700 }, listener)
-  const keepalive = setInterval(() => res.write(': ping\n\n'), 25000)
-  req.on('close', () => {
-    clearInterval(keepalive)
-    fs.unwatchFile(abs, listener)
-  })
+    const st = await fsp.stat(abs)
+    sig = `${st.mtimeMs}:${st.size}`
+  } catch { /* deleted — reported as null, not an error */ }
+  res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+  res.end(JSON.stringify({ sig }))
 }
 
 // ----------------------------------------------------------------- plugins
@@ -862,7 +867,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'text/plain' })
       return res.end('ok\n')
     }
-    if (pathname === '/_events') return handleEvents(req, res, parsed.query)
+    if (pathname === '/_mtime') return await handleMtime(res, parsed.query)
     if (pathname === '/_recent') return await renderRecent(res)
     if (pathname === '/_search') return await renderSearch(parsed.query.q, res)
     if (pathname.startsWith('/_assets/')) {
