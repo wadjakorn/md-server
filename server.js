@@ -11,7 +11,11 @@ const anchor = require('markdown-it-anchor')
 const taskLists = require('markdown-it-task-lists')
 const hljs = require('highlight.js')
 
-const ROOT = path.resolve(process.env.DOCS_ROOT || '/docs')
+// realpath, not just resolve: the containment checks below compare resolved
+// real paths, and if ROOT itself were a symlink every one of them would fail.
+const ROOT = fs.realpathSync(path.resolve(process.env.DOCS_ROOT || '/docs'))
+// What the root crumb calls the served directory. Cosmetic only.
+const ROOT_LABEL = process.env.ROOT_LABEL || path.basename(ROOT)
 const PORT = Number(process.env.PORT || 8080)
 const HOST = process.env.HOST || '0.0.0.0'
 
@@ -46,6 +50,8 @@ const AUDIO_EXT = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.flac'])
 
 const MAX_WALK_ENTRIES = 40000
 const MAX_SEARCH_BYTES = 512 * 1024
+// Read-whole-file-into-memory ceiling for the rendered views.
+const MAX_RENDER_BYTES = 2 * 1024 * 1024
 
 // ---------------------------------------------------------------- markdown
 
@@ -75,8 +81,33 @@ md.use(taskLists, { enabled: true, label: true })
 /** Resolve an already-decoded, ROOT-relative path. Returns null if it escapes. */
 function resolveDecoded (rel) {
   const abs = path.resolve(ROOT, '.' + path.posix.normalize('/' + rel))
-  if (abs !== ROOT && !abs.startsWith(ROOT + path.sep)) return null
-  return abs
+  if (!contains(abs)) return null
+
+  // Dotfiles are denied here, not just hidden from listings. Hiding them in
+  // walkMarkdown/listEntries only removes the link; the path still resolved,
+  // so `/some-project/.env` and `/some-project/.git/config` were readable by
+  // anyone who guessed. This is the whole point of having one resolver.
+  // Note: normalize() above has already collapsed '.' and '..' segments.
+  for (const seg of path.relative(ROOT, abs).split(path.sep)) {
+    if (seg.startsWith('.')) return null
+  }
+
+  // A symlink inside the tree can still point outside it, and stat()/
+  // createReadStream() both follow. Re-check containment against the real
+  // path. ENOENT (or a broken link) leaves `abs` as-is: it does not exist,
+  // so the caller's stat() turns it into the same 404 it always was.
+  try {
+    const real = fs.realpathSync(abs)
+    if (!contains(real)) return null
+    return real
+  } catch {
+    return abs
+  }
+}
+
+/** Is this resolved absolute path ROOT or inside it? */
+function contains (abs) {
+  return abs === ROOT || abs.startsWith(ROOT + path.sep)
 }
 
 /** Resolve a percent-encoded URL path. Query values are already decoded by
@@ -125,7 +156,7 @@ async function walkMarkdown (opts = {}) {
     }
     for (const e of entries) {
       if (seen++ > MAX_WALK_ENTRIES) return out
-      if (e.name.startsWith('.') && e.name !== '.claude') continue
+      if (e.name.startsWith('.')) continue
       const abs = path.join(dir, e.name)
       if (e.isDirectory()) {
         if (SKIP_DIRS.has(e.name)) continue
@@ -156,7 +187,7 @@ function escapeHtml (s) {
 
 function breadcrumbs (rel) {
   const parts = rel === '' ? [] : rel.split('/')
-  const crumbs = ['<a href="/">~/development</a>']
+  const crumbs = [`<a href="/">${escapeHtml(ROOT_LABEL)}</a>`]
   let acc = ''
   parts.forEach((p, i) => {
     acc += '/' + encodeURIComponent(p)
@@ -196,7 +227,7 @@ ${watchPath ? `<div id="reload-toast">Updated — reloading…</div>
   // origin, and every open page would hold one — so a few open notes locked
   // the whole server out. Polling only while visible keeps it to one small
   // request every two seconds for the page actually being read.
-  const watch = '/_mtime?path=' + encodeURIComponent(${JSON.stringify(watchPath)})
+  const watch = '/_mtime?path=' + encodeURIComponent(${JSON.stringify(watchPath).replace(/</g, '\\u003c')})
   let sig = null
   let timer = 0
   const poll = async () => {
@@ -221,7 +252,7 @@ ${watchPath ? `<div id="reload-toast">Updated — reloading…</div>
 ${mermaid ? `<script type="module">
   import mermaid from '/_assets/mermaid.esm.min.mjs'
   const dark = matchMedia('(prefers-color-scheme: dark)').matches
-  mermaid.initialize({ startOnLoad: true, theme: dark ? 'dark' : 'default', securityLevel: 'loose' })
+  mermaid.initialize({ startOnLoad: true, theme: dark ? 'dark' : 'default', securityLevel: 'strict' })
 </script>` : ''}
 </body>
 </html>`
@@ -270,7 +301,7 @@ async function listEntries (abs) {
   const dirs = []
   const files = []
   for (const e of entries) {
-    if (e.name.startsWith('.') && e.name !== '.claude') continue
+    if (e.name.startsWith('.')) continue
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name)) continue
       dirs.push(e.name)
@@ -358,10 +389,10 @@ async function renderDir (abs, res) {
 
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
   res.end(layout({
-    title: rel === '' ? 'development' : path.basename(abs),
+    title: rel === '' ? ROOT_LABEL : path.basename(abs),
     rel,
     watchPath: rel,
-    body: `<h1>${rel === '' ? '~/development' : escapeHtml(path.basename(abs))}</h1>` +
+    body: `<h1>${rel === '' ? escapeHtml(ROOT_LABEL) : escapeHtml(path.basename(abs))}</h1>` +
       (rows || up
         ? `<ul class="listing explorer">${up}${rows}</ul>`
         : '<p class="empty">Empty directory.</p>') +
@@ -554,14 +585,67 @@ function sendFile (abs, st, req, res) {
     (ext === '.json' ? 'application/json; charset=utf-8'
       : TEXT_EXT.has(ext) || MD_EXT.has(ext) ? 'text/plain; charset=utf-8'
         : 'application/octet-stream')
-  res.writeHead(200, {
+
+  const headers = {
     'content-type': type,
-    'content-length': st.size,
     'last-modified': lastMod,
     'cache-control': 'no-cache',
-  })
+    // The type we picked is the type it is — never let a sniffer upgrade a
+    // note into something executable.
+    'x-content-type-options': 'nosniff',
+    'accept-ranges': 'bytes',
+  }
+  // An SVG opened at its own URL is a document, not a picture: script inside
+  // it runs on this origin and can read everything the server serves. It
+  // still renders in the <img> the viewer builds — that context ignores
+  // script either way — so sandbox costs nothing here.
+  if (ext === '.svg') headers['content-security-policy'] = "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+
+  // Range, so <video> can seek. Safari on iOS will not start playback at all
+  // without a 206, and this server exists to be read from a phone.
+  const range = parseRange(req.headers.range, st.size)
+  if (range === 'unsatisfiable') {
+    res.writeHead(416, { 'content-range': `bytes */${st.size}`, 'accept-ranges': 'bytes' })
+    return res.end()
+  }
+  if (range) {
+    headers['content-range'] = `bytes ${range.start}-${range.end}/${st.size}`
+    headers['content-length'] = range.end - range.start + 1
+    res.writeHead(206, headers)
+    if (req.method === 'HEAD') return res.end()
+    return fs.createReadStream(abs, { start: range.start, end: range.end }).pipe(res)
+  }
+
+  headers['content-length'] = st.size
+  res.writeHead(200, headers)
   if (req.method === 'HEAD') return res.end()
   return fs.createReadStream(abs).pipe(res)
+}
+
+/**
+ * A single `bytes=` range, or null for "send the whole thing". Multi-range is
+ * deliberately unsupported — media players never ask for it, and answering it
+ * means multipart bodies for no gain.
+ */
+function parseRange (header, size) {
+  if (!header || size === 0) return null
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim())
+  if (!m) return null
+  const [, rawStart, rawEnd] = m
+  let start
+  let end
+  if (rawStart === '') {
+    if (rawEnd === '') return null
+    start = Math.max(0, size - Number(rawEnd)) // suffix: last N bytes
+    end = size - 1
+  } else {
+    start = Number(rawStart)
+    end = rawEnd === '' ? size - 1 : Math.min(Number(rawEnd), size - 1)
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= size) {
+    return 'unsatisfiable'
+  }
+  return { start, end }
 }
 
 // ----------------------------------------------------- live reload (polled)
@@ -855,7 +939,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; }
 
 function notFound (res) {
   res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' })
-  res.end(layout({ title: 'Not found', rel: '', body: '<h1>404</h1><p class="empty">No such file under ~/development.</p>' }))
+  res.end(layout({ title: 'Not found', rel: '', body: '<h1>404</h1><p class="empty">No such file.</p>' }))
 }
 
 const server = http.createServer(async (req, res) => {
@@ -919,18 +1003,24 @@ const server = http.createServer(async (req, res) => {
         }
       }
       if (IMAGE_EXT.has(ext)) return await renderImage(abs, st, res)
-      if (MD_EXT.has(ext)) return await renderMarkdown(abs, res)
+      if (MD_EXT.has(ext)) {
+        if (st.size > MAX_RENDER_BYTES) return await renderDownload(abs, st, res)
+        return await renderMarkdown(abs, res)
+      }
       if (TEXT_EXT.has(ext) || ext === '') {
-        if (st.size > 2 * 1024 * 1024) return await renderDownload(abs, st, res)
+        if (st.size > MAX_RENDER_BYTES) return await renderDownload(abs, st, res)
         return await renderText(abs, res)
       }
       return await renderDownload(abs, st, res)
     }
 
-    if (MD_EXT.has(ext)) return await renderMarkdown(abs, res)
+    if (MD_EXT.has(ext)) {
+      if (st.size > MAX_RENDER_BYTES) return await renderDownload(abs, st, res)
+      return await renderMarkdown(abs, res)
+    }
     if (MIME[ext]) return sendFile(abs, st, req, res)
     if (TEXT_EXT.has(ext) || ext === '') {
-      if (st.size > 2 * 1024 * 1024) return await renderDownload(abs, st, res)
+      if (st.size > MAX_RENDER_BYTES) return await renderDownload(abs, st, res)
       return await renderText(abs, res)
     }
     return sendFile(abs, st, req, res)

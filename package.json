@@ -1,7 +1,7 @@
 {
   "name": "md-server",
   "version": "1.0.0",
-  "private": true,
+  "license": "MIT",
   "type": "commonjs",
   "description": "File explorer and markdown viewer for a directory of working notes, served over Tailscale",
   "main": "server.js",
