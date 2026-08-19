@@ -4,9 +4,12 @@ This file is the source of truth for any coding agent working in this repository
 
 ## What this is
 
-A single-file Node HTTP server (`server.js`, ~1000 lines, CommonJS, no build step,
-no tests) that serves a read-only directory of markdown/notes as a mobile-friendly
-file explorer and viewer over Tailscale. It is deployed only as a docker compose
+A single-file Node HTTP server (`server.js`, ~1000 lines, CommonJS, no build
+step) that serves a read-only directory of markdown/notes as a mobile-friendly
+file explorer and viewer over Tailscale. The only tests are `test/*.test.js`,
+which drive the real server over HTTP against a fixture tree — they exist to
+guard the security boundary (`resolveDecoded`) and the response headers, so run
+them before and after touching either. It is deployed only as a docker compose
 service on this machine; there is no CI, no bundler, and no framework.
 
 ## Commands
@@ -16,6 +19,8 @@ docker compose up -d --build   # start, and rebuild after editing server.js
 docker compose restart         # enough for plugins/ changes — bind-mounted, not baked in
 docker compose logs -f
 curl -s localhost:8080/_healthz
+
+npm test                       # node --test, no deps; needs node 22 on the host
 
 node server.js                 # run outside docker; needs DOCS_ROOT set to a real dir
 ```
