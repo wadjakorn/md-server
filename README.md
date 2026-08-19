@@ -5,6 +5,12 @@ from a phone over Tailscale. Exists so agent-written plans, designs, and reports
 are readable away from the terminal — write a `.md`, share a URL, done. There is
 no publish step and no build step.
 
+> **Point `DOCS_DIR` at the narrowest directory that does the job.** There is no
+> authentication: everything under it is readable by anything that can reach the
+> port. Serving a whole home or dev directory means serving every config file in
+> it. The default port bindings are loopback-only for exactly this reason —
+> widen them deliberately, or not at all.
+
 ## Setup
 
 ```sh
