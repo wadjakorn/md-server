@@ -80,6 +80,7 @@ works from the tailnet but is refused on the box itself.
 docker compose up -d --build   # start / rebuild after editing server.js
 docker compose logs -f         # tail
 docker compose restart
+npm test                       # boundary + rendering tests, no deps, ~1s
 ```
 
 `restart: unless-stopped` brings it back after a reboot.

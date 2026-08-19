@@ -1032,5 +1032,7 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, HOST, () => {
-  console.log(`[md-server] serving ${ROOT} on http://${HOST}:${PORT}`)
+  // address().port, not PORT: PORT=0 asks the OS to pick one, which is how the
+  // tests start a server without racing each other for a fixed port.
+  console.log(`[md-server] serving ${ROOT} on http://${HOST}:${server.address().port}`)
 })
