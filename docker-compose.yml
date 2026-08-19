@@ -16,7 +16,10 @@ services:
       # domain locally — bind it so the short name works on the box too.
       - "${LOCAL_HOST_IP:-127.0.1.1}:8080:8080"
     volumes:
-      - ${DOCS_DIR:-${HOME}/development}:/docs:ro
+      # Required, and deliberately not defaulted: an unset HOME (systemd, CI,
+      # rootless) would silently resolve to /development, and a wrong default
+      # here means publishing someone's whole home directory.
+      - ${DOCS_DIR:?set DOCS_DIR in .env to the directory you want served}:/docs:ro
       # Mounted rather than baked in, so a plugin can be added or removed with
       # a restart instead of a rebuild.
       - ./plugins:/app/plugins:ro

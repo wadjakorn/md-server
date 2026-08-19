@@ -4,9 +4,12 @@ This file is the source of truth for any coding agent working in this repository
 
 ## What this is
 
-A single-file Node HTTP server (`server.js`, ~1000 lines, CommonJS, no build step,
-no tests) that serves a read-only directory of markdown/notes as a mobile-friendly
-file explorer and viewer over Tailscale. It is deployed only as a docker compose
+A single-file Node HTTP server (`server.js`, ~1000 lines, CommonJS, no build
+step) that serves a read-only directory of markdown/notes as a mobile-friendly
+file explorer and viewer over Tailscale. The only tests are `test/*.test.js`,
+which drive the real server over HTTP against a fixture tree — they exist to
+guard the security boundary (`resolveDecoded`) and the response headers, so run
+them before and after touching either. It is deployed only as a docker compose
 service on this machine; there is no CI, no bundler, and no framework.
 
 ## Commands
@@ -17,6 +20,8 @@ docker compose restart         # enough for plugins/ changes — bind-mounted, n
 docker compose logs -f
 curl -s localhost:8080/_healthz
 
+npm test                       # node --test, no deps; needs node 22 on the host
+
 node server.js                 # run outside docker; needs DOCS_ROOT set to a real dir
 ```
 
@@ -26,16 +31,22 @@ node server.js                 # run outside docker; needs DOCS_ROOT set to a re
 ## Architecture
 
 Everything is one process with no router library — `http.createServer` in
-`server.js` dispatches on `pathname` in order: `/_healthz`, `/_events` (SSE),
+`server.js` dispatches on `pathname` in order: `/_healthz`, `/_mtime`,
 `/_recent`, `/_search`, `/_assets/…`, then the path resolved against `ROOT`.
 
 Layers worth knowing before editing:
 
 - **Path safety is centralised.** `safeResolve(urlPath)` (URL-encoded input) and
   `resolveDecoded(rel)` (already-decoded input, e.g. query strings) are the only
-  ways a request turns into a filesystem path, and both reject escapes from
-  `ROOT` and dotfiles. Never build an fs path from request data any other way —
-  this is the entire security boundary, since there is no auth.
+  ways a request turns into a filesystem path. `safeResolve` decodes and
+  delegates; `resolveDecoded` is where the whole policy lives, and it rejects
+  three things: escapes above `ROOT`, any path segment starting with `.`, and
+  symlinks whose real path lands outside `ROOT` (it returns the *real* path, so
+  callers stat what they checked). Never build an fs path from request data any
+  other way — this is the entire security boundary, since there is no auth.
+  Note `SKIP_DIRS` is deliberately **not** part of it: it bounds traversal cost
+  in `walkMarkdown`/`listEntries`, and promoting it to an access rule would 404
+  legitimate files under `dist/`, `build/`, `out/`.
 - **Dispatch on extension**, via the `MD_EXT` / `TEXT_EXT` / `MIME` / `IMAGE_EXT`
   / `VIDEO_EXT` / `AUDIO_EXT` sets near the top. Adding a file type usually means
   adding to one of those sets rather than adding a branch.
@@ -49,10 +60,14 @@ Layers worth knowing before editing:
 - **CSS/JS are inline constants** (`APP_CSS`, and assets served from `/_assets/`
   with an in-memory `ASSET_CACHE`). mermaid and highlight.js are read out of
   `node_modules` at request time and cached — there is no asset pipeline.
-- **Live reload** is SSE on `/_events?path=…` using `fs.watchFile` polling
-  (chosen deliberately: inotify is unreliable across bind mounts). The page a
-  user already opened stays live, which is why revising a doc in place beats
-  writing a new file with a new URL.
+- **Live reload** is the page polling `/_mtime?path=…` every two seconds while
+  visible, comparing an `mtime:size` signature. It replaced an SSE stream,
+  which held one of the browser's six connections per origin for the life of
+  every open page and wedged the server after a handful of notes. Anything
+  interpolated into that inline `<script>` must escape `<` — `JSON.stringify`
+  alone does not, and a path can contain `</script>`. The page a user already
+  opened stays live, which is why revising a doc in place beats writing a new
+  file with a new URL.
 
 ### Plugins
 
