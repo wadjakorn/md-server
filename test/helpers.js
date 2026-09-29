@@ -24,6 +24,7 @@ async function makeFixture () {
     w('proj/.git/config', '[core]\n'),
     w('.claude/settings.json', '{"key":"leaked"}\n'),
     w('dist/notes.md', '# under dist\n'),
+    w('code.md', '# code\n\n```js\nconst a = 1\n```\n'),
     w('sub/ok.md', '# ok\n\n```mermaid\ngraph TD; A-->B;\n```\n'),
     // A filename cannot contain '/', but a path can — the separator supplies
     // the one that closes an inline <script>. Hence a directory named 'a<'.

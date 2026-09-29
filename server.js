@@ -197,7 +197,7 @@ function breadcrumbs (rel) {
   return crumbs.join('<span class="sep">/</span>')
 }
 
-function layout ({ title, rel, body, watchPath, mermaid, wide, head }) {
+function layout ({ title, rel, body, watchPath, mermaid, copy, wide, head }) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -249,6 +249,40 @@ ${watchPath ? `<div id="reload-toast">Updated — reloading…</div>
   addEventListener('pageshow', start)
   start()
 </script>` : ''}
+${copy ? `<script>
+  // Plain http over the tailnet is not a secure context, so navigator.clipboard
+  // is missing on the phone — fall back to selecting a hidden textarea.
+  const copyText = async (text) => {
+    if (navigator.clipboard && isSecureContext) return navigator.clipboard.writeText(text)
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.readOnly = true
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0'
+    document.body.appendChild(ta)
+    ta.select()
+    ta.setSelectionRange(0, text.length)
+    const ok = document.execCommand('copy')
+    ta.remove()
+    if (!ok) throw new Error('copy failed')
+  }
+  // The button sits in a wrapper beside the <pre>, not inside it, so it stays
+  // put when a long line scrolls the block sideways.
+  for (const pre of document.querySelectorAll('main pre.hljs')) {
+    const wrap = document.createElement('div')
+    wrap.className = 'codeblock'
+    pre.replaceWith(wrap)
+    wrap.append(pre)
+    wrap.insertAdjacentHTML('beforeend', '<button type="button" class="copy-btn">Copy</button>')
+  }
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.copy-btn')
+    if (!btn) return
+    const code = btn.parentNode.querySelector('pre')
+    try { await copyText(code.textContent); btn.textContent = 'Copied' } catch { btn.textContent = 'Failed' }
+    clearTimeout(btn._t)
+    btn._t = setTimeout(() => { btn.textContent = 'Copy' }, 1500)
+  })
+</script>` : ''}
 ${mermaid ? `<script type="module">
   import mermaid from '/_assets/mermaid.esm.min.mjs'
   const dark = matchMedia('(prefers-color-scheme: dark)').matches
@@ -271,6 +305,7 @@ async function renderMarkdown (abs, res) {
     body: html,
     watchPath: rel,
     mermaid: /class="mermaid"/.test(html),
+    copy: /<pre class="hljs"/.test(html),
   }))
 }
 
@@ -290,6 +325,7 @@ async function renderText (abs, res) {
     rel,
     body: `<pre class="hljs filecode"><code>${code}</code></pre>`,
     watchPath: rel,
+    copy: true,
   }))
 }
 
@@ -897,6 +933,19 @@ pre code { background: none; padding: 0; }
 pre.filecode { font-size: .8125rem; }
 pre.mermaid { border: none; background: none; text-align: center; padding: 0; overflow-x: auto; }
 pre.mermaid svg { max-width: 100%; height: auto; }
+.codeblock { position: relative; margin: 0 0 1rem; }
+.codeblock > pre { margin: 0; }
+.copy-btn {
+  position: absolute; top: .4rem; right: .4rem;
+  font: .75rem/1 inherit; padding: .35rem .55rem;
+  color: var(--muted); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}
+.copy-btn:hover { color: var(--fg); }
+@media (hover: hover) {
+  .copy-btn { opacity: 0; transition: opacity .15s; }
+  .codeblock:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
+}
 img, video { max-width: 100%; height: auto; border-radius: var(--radius); }
 hr { border: none; border-top: 1px solid var(--line); margin: 2rem 0; }
 

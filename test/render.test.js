@@ -27,6 +27,13 @@ test('the same escaping applies on a directory listing', async () => {
   assert.ok(!line.includes('</script>'))
 })
 
+test('a code block gets the copy button script; a mermaid-only page does not', async () => {
+  const code = await (await fetch(srv.base + '/code.md')).text()
+  assert.ok(code.includes('copy-btn'), 'a fenced code block should be copyable')
+  const diagram = await (await fetch(srv.base + '/sub/ok.md')).text()
+  assert.ok(!diagram.includes('copy-btn'), 'a diagram is not code to copy')
+})
+
 test('svg is sandboxed and never sniffed', async () => {
   const r = await fetch(srv.base + '/logo.svg')
   assert.equal(r.headers.get('x-content-type-options'), 'nosniff')
